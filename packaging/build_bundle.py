@@ -67,6 +67,52 @@ def check_deps():
         sys.exit(1)
 
 
+def patch_scipy():
+    # scipy/stats/_distn_infrastructure.py ends a module-level cleanup
+    # block with:
+    #     for obj in [s for s in dir() if s.startswith('_doc_')]:
+    #         exec('del ' + obj)
+    #     del obj
+    # The trailing "del obj" assumes the for-loop ran at least once and
+    # left `obj` bound. Under PyInstaller's frozen import machinery the
+    # list comprehension can come back empty at the point this file
+    # executes, so `obj` is never bound and that last line raises
+    # "NameError: name 'obj' is not defined" -- which happens inside
+    # geom_ops.py's `from skimage.measure import ... approximate_polygon`
+    # (skimage -> scipy.signal -> scipy.stats), so it kills the app
+    # before any window ever opens, with no crash dialog. The for-loop
+    # itself already deletes every matching name; the stray extra "del
+    # obj" was only ever meant to tidy up the loop variable and is safe
+    # to drop outright.
+    step("Patching scipy (frozen-import NameError workaround)")
+    try:
+        import scipy.stats  # noqa: F401  -- just to locate the file below
+        target = Path(scipy.stats._distn_infrastructure.__file__)
+    except Exception as exc:
+        print(f"  Could not locate scipy's _distn_infrastructure.py ({exc}) -- skipping")
+        return
+
+    text = target.read_text(encoding="utf-8")
+    buggy = (
+        "for obj in [s for s in dir() if s.startswith('_doc_')]:\n"
+        "    exec('del ' + obj)\n"
+        "del obj\n"
+    )
+    fixed = (
+        "for obj in [s for s in dir() if s.startswith('_doc_')]:\n"
+        "    exec('del ' + obj)\n"
+    )
+    if buggy not in text:
+        if fixed in text:
+            print(f"  {target.name}  already patched")
+        else:
+            print(f"  {target.name}  did not match the expected buggy text -- "
+                  "scipy version differs; leaving it alone (may still crash)")
+        return
+    target.write_text(text.replace(buggy, fixed), encoding="utf-8")
+    print(f"  {target.name}  patched")
+
+
 def run_pyinstaller():
     step("Running PyInstaller (this takes a few minutes)")
     for path in (BUILD, DIST):
@@ -77,11 +123,28 @@ def run_pyinstaller():
     subprocess.run(cmd, cwd=ROOT, check=True)
 
 
+def sign_mac_app(target):
+    # An entirely unsigned app is killed by macOS on launch on Apple
+    # Silicon -- no window, no crash dialog, no log (it dies before the
+    # app's own code, including bundle_paths.start_logging(), ever
+    # runs). An ad-hoc signature (the "-" identity -- no Apple
+    # Developer account needed) satisfies that check. This is not
+    # notarization -- first launch still shows the "unidentified
+    # developer" Gatekeeper warning, which the README explains how to
+    # get past. CI does this same step itself after calling this
+    # script, so this is a no-op to repeat there; it only matters for
+    # bundles built locally via this script, which never otherwise get
+    # signed at all.
+    step("Ad-hoc signing the app (required on Apple Silicon)")
+    subprocess.run(["codesign", "--force", "--deep", "--sign", "-", str(target)], check=True)
+
+
 def zip_result():
     step("Zipping the bundle")
     tag = "mac" if IS_MAC else ("win" if IS_WINDOWS else "linux")
     if IS_MAC:
         target, zip_path = DIST / "SanPyCAD-2D.app", DIST / f"SanPyCAD-2D-{tag}.zip"
+        sign_mac_app(target)
         # ditto, not zipfile: it is the only thing that reliably keeps
         # the executable bit and symlinks inside a .app, without which
         # the unzipped app will not launch.
@@ -101,6 +164,7 @@ def zip_result():
 
 def main():
     check_deps()
+    patch_scipy()
     run_pyinstaller()
     target, zip_path = zip_result()
     print(f"\nBuilt: {target}")

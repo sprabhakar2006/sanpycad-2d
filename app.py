@@ -35,6 +35,18 @@ else:
 
 sys.path.insert(0, os.path.join(BASE_DIR, "backend"))
 
+# geom_ops.py pulls in skimage.measure, which lazy-imports scipy.signal,
+# which in turn imports scipy.stats. scipy/stats/_distn_infrastructure.py
+# has a module-level cleanup bug -- a bare "del obj" after a for-loop that
+# may never bind obj -- which packaging/build_bundle.py patches out of the
+# installed scipy before every build (see patch_scipy() there). This
+# import just makes sure that already-patched scipy.stats loads once,
+# early and cleanly, before anything else reaches it indirectly.
+try:
+    import scipy.stats  # noqa: E402,F401
+except Exception:
+    pass
+
 import server  # noqa: E402
 
 try:

@@ -4,6 +4,8 @@ build/
 SanPyCAD-2D.app/
 SanPyCAD-2D.log
 launch_debug.log
+raw_launch_output.log
+Debug Launch.command
 __pycache__/
 *.pyc
 .DS_Store
