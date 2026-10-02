@@ -23,6 +23,7 @@ Fix Missing manifold3d Bundling.command
 Fix manifold3d Not Installed in CI.command
 Fix manifold3d Spec Swallow Bug.command
 Fix manifold3d DLL Bundling and Add Diagnostics.command
+Fix manifold3d libs Flat-Module Path Bug.command
 __pycache__/
 *.pyc
 .DS_Store
