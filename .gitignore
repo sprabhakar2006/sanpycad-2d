@@ -16,6 +16,7 @@ Diag.command
 Sync Backend to GitHub Repo.command
 Sync Backend into App Bundle.command
 Check and Sync Brep Backend.command
+Update v1.0.0 Release.command
 __pycache__/
 *.pyc
 .DS_Store
