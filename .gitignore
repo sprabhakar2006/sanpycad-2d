@@ -25,6 +25,7 @@ Fix manifold3d Spec Swallow Bug.command
 Fix manifold3d DLL Bundling and Add Diagnostics.command
 Fix manifold3d libs Flat-Module Path Bug.command
 Fix Stale Frontend Still Checking OpenSCAD Not Manifold3d.command
+Fix Brep Infinite Window Spawn on Windows.command
 __pycache__/
 *.pyc
 .DS_Store
