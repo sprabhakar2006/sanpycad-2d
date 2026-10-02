@@ -23,6 +23,32 @@ import threading
 import time
 import webbrowser
 
+
+def _unblock_bundled_dlls():
+    """Windows stamps every file extracted from a downloaded zip with a
+    "this came from the internet" mark (an NTFS Zone.Identifier
+    alternate data stream). .NET Framework refuses to load an assembly
+    carrying that mark, which is what makes pywebview's winforms backend
+    (it loads bundled DLLs via pythonnet/.NET) fail with a cryptic
+    "Failed to resolve Python.Runtime.Loader.Initialize" RuntimeError on
+    a plain unzip-and-run -- nothing to do with this app's own code.
+    Removing the mark from every bundled DLL before webview is ever
+    imported avoids that entirely. No-op on macOS/Linux or when running
+    from source (only frozen Windows builds carry bundled DLLs)."""
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return
+    base = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+    for root, _dirs, files in os.walk(base):
+        for name in files:
+            if name.lower().endswith(".dll"):
+                try:
+                    os.remove(os.path.join(root, name) + ":Zone.Identifier")
+                except OSError:
+                    pass  # no mark present, or the folder isn't writable
+
+
+_unblock_bundled_dlls()
+
 # Where backend/ and frontend/ live. Running from source that is simply
 # this file's own folder. In a frozen (PyInstaller) build they are
 # copied into the bundle's resource folder instead, which is not next
