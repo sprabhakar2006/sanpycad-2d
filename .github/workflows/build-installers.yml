@@ -25,15 +25,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macos-14 is Apple Silicon, macos-13 is Intel. A bundle built
-          # on Apple Silicon does not run on an Intel Mac, so both are
-          # built and shipped separately.
+          # macos-14 is Apple Silicon. An Intel build (macos-13) was
+          # dropped from this matrix -- GitHub's free-tier account caps
+          # concurrent macOS runners at 5 across the whole account, and
+          # with three repos (SanPyCAD, SanPyCAD-Brep, SanPyCAD-2D) each
+          # queuing two macOS jobs per release, builds were stalling in
+          # the queue. Re-add a macos-13 entry here (mirroring the
+          # arm64 one, with asset SanPyCAD-2D-mac-intel.zip) if Intel
+          # Mac support is needed later.
           - os: macos-14
             label: macOS (Apple Silicon)
             asset: SanPyCAD-2D-mac-arm64.zip
-          - os: macos-13
-            label: macOS (Intel)
-            asset: SanPyCAD-2D-mac-intel.zip
           - os: windows-latest
             label: Windows (x64)
             asset: SanPyCAD-2D-win-x64.zip

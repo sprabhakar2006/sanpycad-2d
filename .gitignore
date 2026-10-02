@@ -6,6 +6,7 @@ SanPyCAD-2D.log
 launch_debug.log
 raw_launch_output.log
 Debug Launch.command
+Fix macOS Matrix (SanPyCAD + Brep).command
 __pycache__/
 *.pyc
 .DS_Store
