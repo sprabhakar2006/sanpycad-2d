@@ -1,0 +1,31 @@
+dist/
+build/
+.build_venv/
+SanPyCAD-2D.app/
+SanPyCAD-2D.log
+launch_debug.log
+__pycache__/
+*.pyc
+.DS_Store
+git_check_log.txt
+git_credential_fix_log.txt
+
+# Unencrypted geometry-engine source -- only the _protected/*.enc
+# loader stubs ship publicly (same as SanPyCAD and SanPyCAD-Brep).
+backend/_protected_src/
+
+# Superseded by the one-click bundle (see README's Install section).
+Fix Mac Security Warning.command
+SanPyCAD-2D.vbs
+run_sanpycad2d.bat
+
+# Personal project files, not part of the app itself.
+RIC layout.dxf
+RIC layout.json
+RIC machine shop layout.pdf
+ric layout.pdf
+sec.pdf
+triangle.pdf
+layout_template.dxf
+layout_template.pdf
+offset_example.json

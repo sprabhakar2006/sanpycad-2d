@@ -1,0 +1,18 @@
+# These are the same dependencies ocad.py already needs to import at
+# all -- if SanPyCAD (or SanPyCAD-Brep) already runs on this machine, you
+# already have them.
+numpy
+scipy
+sympy
+scikit-image
+
+# Optional, for a real desktop app window instead of opening a browser tab:
+pywebview
+
+# Optional, for "Copy to clipboard" buttons to actually reach the OS
+# clipboard from inside that desktop window (its embedded webview blocks
+# the browser's own clipboard API by default -- see app.py's
+# copy_to_clipboard() for why). Without this installed, those buttons
+# still try the browser API as a fallback, which may or may not work
+# depending on your platform.
+pyperclip
