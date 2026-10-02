@@ -9,6 +9,7 @@ Debug Launch.command
 Fix macOS Matrix (SanPyCAD + Brep).command
 Push Matrix Fix.command
 Fix README Intel Row.command
+Retag and Rebuild.command
 __pycache__/
 *.pyc
 .DS_Store
