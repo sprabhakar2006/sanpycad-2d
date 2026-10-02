@@ -24,7 +24,6 @@ to install.
 | Platform | Download | Open it |
 |---|---|---|
 | macOS (Apple Silicon) | `SanPyCAD-2D-mac-arm64.zip` | double-click `SanPyCAD-2D.app` |
-| macOS (Intel) | `SanPyCAD-2D-mac-intel.zip` | double-click `SanPyCAD-2D.app` |
 | Windows 10/11 (x64) | `SanPyCAD-2D-win-x64.zip` | open the folder, double-click `SanPyCAD-2D.exe` |
 
 **First launch on macOS** shows "SanPyCAD-2D cannot be opened because
