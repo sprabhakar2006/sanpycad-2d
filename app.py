@@ -263,9 +263,37 @@ def main():
     wait_for_server(url)
     print(f"[SanPyCAD 2D Sketch] backend running at {url}")
 
+    def _fall_back_to_browser(reason):
+        """Shared fallback: the app server itself is fine either way, so a
+        pywebview failure is never fatal -- just less polished. Used both
+        when pywebview isn't installed at all, and when it's installed but
+        can't actually open a native window (e.g. on Windows, when the
+        .NET/WebView2 runtime pywebview's winforms backend depends on is
+        missing, blocked by antivirus, or otherwise broken on that
+        machine -- that shows up as a RuntimeError/clr_loader failure, not
+        an ImportError, which is why this is handled separately below)."""
+        print(reason)
+        webbrowser.open(url)
+        print("[SanPyCAD 2D Sketch] press Ctrl+C here to stop the app")
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
+
     try:
         global webview
         import webview
+    except ImportError:
+        _fall_back_to_browser(
+            "[SanPyCAD 2D Sketch] pywebview not installed -- opening your "
+            "default browser instead. For a real app window, run: "
+            "pip install pywebview"
+        )
+        httpd.shutdown()
+        return
+
+    try:
         webview.create_window(
             "SanPyCAD 2D Sketch", url, width=1200, height=800, min_size=(800, 560),
             # Explicitly off (this is also pywebview's documented default,
@@ -295,17 +323,23 @@ def main():
         # temporarily if a future bug needs a real stack trace to
         # diagnose, then set it back to False afterward.
         webview.start(debug=False)
-    except ImportError:
-        print("[SanPyCAD 2D Sketch] pywebview not installed -- opening your "
-              "default browser instead. For a real app window, run: "
-              "pip install pywebview")
-        webbrowser.open(url)
-        print("[SanPyCAD 2D Sketch] press Ctrl+C here to stop the app")
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            pass
+    except Exception as exc:
+        # pywebview IS installed here, but failed to actually open a
+        # native window -- on Windows this is almost always its winforms
+        # backend failing to load the .NET/CLR runtime it needs (missing
+        # or broken .NET Framework / WebView2 Runtime, or an antivirus
+        # that quarantined part of the bundled pythonnet DLL). Rather
+        # than crashing with a raw traceback, fall back to the browser so
+        # the app is still usable, and say what's likely wrong.
+        _fall_back_to_browser(
+            f"[SanPyCAD 2D Sketch] could not open the app window ({exc!r}) "
+            "-- opening your default browser instead. This usually means "
+            "Windows is missing (or has a broken) Microsoft Edge WebView2 "
+            "Runtime or .NET Framework install; installing/repairing "
+            "WebView2 from "
+            "https://developer.microsoft.com/microsoft-edge/webview2/ "
+            "and relaunching SanPyCAD 2D should restore the native window."
+        )
 
     httpd.shutdown()
 
