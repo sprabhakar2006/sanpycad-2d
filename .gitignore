@@ -19,6 +19,7 @@ Check and Sync Brep Backend.command
 Update v1.0.0 Release.command
 Fix Windows WebView Crash.command
 Fix Missing brep_bridge.command
+Fix Missing manifold3d Bundling.command
 __pycache__/
 *.pyc
 .DS_Store
