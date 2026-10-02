@@ -14,6 +14,7 @@ Rebuild SanPyCAD Backend.command
 Port fillet_by_offset.command
 Diag.command
 Sync Backend to GitHub Repo.command
+Sync Backend into App Bundle.command
 __pycache__/
 *.pyc
 .DS_Store
