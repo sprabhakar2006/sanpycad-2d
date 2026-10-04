@@ -27,6 +27,7 @@ Fix manifold3d libs Flat-Module Path Bug.command
 Fix Stale Frontend Still Checking OpenSCAD Not Manifold3d.command
 Fix Brep Infinite Window Spawn on Windows.command
 Fix swp Non-Convex Cap Triangulation.command
+Fix p_line3d Watertight Tube.command
 __pycache__/
 *.pyc
 .DS_Store
