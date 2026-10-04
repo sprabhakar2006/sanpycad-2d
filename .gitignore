@@ -29,6 +29,7 @@ Fix Brep Infinite Window Spawn on Windows.command
 Fix swp Non-Convex Cap Triangulation.command
 Fix p_line3d Watertight Tube.command
 Fix Brep nmv numpy Complex eig.command
+Ship fillet_by_offset use_o_3dc.command
 __pycache__/
 *.pyc
 .DS_Store
