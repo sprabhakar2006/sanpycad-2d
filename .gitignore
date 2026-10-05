@@ -30,6 +30,7 @@ Fix swp Non-Convex Cap Triangulation.command
 Fix p_line3d Watertight Tube.command
 Fix Brep nmv numpy Complex eig.command
 Ship fillet_by_offset use_o_3dc.command
+Ship Brep Pick Edges Compact Panel.command
 __pycache__/
 *.pyc
 .DS_Store
