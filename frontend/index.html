@@ -193,6 +193,19 @@
       <button class="tool-btn" data-tool="point">&#10010; Point</button>
     </div>
     <div class="tool-group">
+      <div class="label">Reference image</div>
+      <button class="tool-btn" id="btn-img-import" title="Load a picture (PNG/JPG/etc) as a backdrop to trace over. Or drag an image file onto the canvas.">&#128444; Import image&#8230;</button>
+      <input type="file" id="img-file-input" accept="image/*" style="display:none;">
+      <button class="tool-btn" id="btn-img-calib" title="Click two points on the image, then type their real distance -- sets the image to true scale">&#8596; Set scale (2 points)</button>
+      <button class="tool-btn" id="btn-img-origin" title="Click the point on the image that should become (0, 0)">&#8982; Set origin (click)</button>
+      <button class="tool-btn" id="btn-img-move" title="Drag the image to reposition it (Esc or any other tool to stop)">&#10021; Move image</button>
+      <button class="tool-btn" id="btn-img-rot" title="Rotate the image 90&deg; counter-clockwise">&#8635; Rotate 90&deg;</button>
+      <div class="field-row" style="padding:2px 6px;"><label for="img-opacity" style="min-width:60px;">Opacity</label>
+        <input type="range" id="img-opacity" min="10" max="100" value="55" style="flex:1;"></div>
+      <button class="tool-btn" id="btn-img-toggle" title="Show or hide the image without removing it">&#128065; Show / hide image</button>
+      <button class="tool-btn" id="btn-img-remove" title="Remove the image from this sketch">&#128465; Remove image</button>
+    </div>
+    <div class="tool-group">
       <div class="label">Select &amp; transform</div>
       <button class="tool-btn" data-tool="select">&#10003; Select <span class="k">V</span></button>
       <button class="tool-btn" data-tool="move">&#10021; Move <span class="k">M</span></button>
@@ -441,6 +454,7 @@
 
   // ---- view transform (world = math coords, Y up; screen = canvas px, Y down) ----
   let view = { cx: 0, cy: 0, scale: 4 }; // scale = px per world unit
+  let bgImg = null; // reference image (trace-over backdrop) -- see drawBgImage()
 
   // ---- mouse handling ----
   // Declared up here (rather than down near the mousedown/mousemove/wheel
@@ -1893,6 +1907,7 @@
     ctx.fillStyle = getCss('--bg'); ctx.fillRect(0, 0, w, h);
 
     drawGrid(w, h);
+    drawBgImage();
     drawAxes(w, h);
 
     labelBoxes.clear();
@@ -6826,6 +6841,162 @@
       setStatus('Could not copy to clipboard: ' + describeError(e), false);
     }
   });
+
+  // ---- Reference image (trace-over backdrop) ----
+  // A picture shown BEHIND the sketch, purely as something to trace -- it is
+  // not an entity (never exported, saved with the sketch, or picked), just
+  // pixels drawn under the grid-axes/entities each frame. World size starts
+  // as a guess (60% of the visible width) and is set to true scale with
+  // "Set scale (2 points)". Not persisted: re-import after reopening.
+  const imgFileInput = document.getElementById('img-file-input');
+  let imgMode = null;      // null | 'move' | 'calib' | 'origin'
+  let imgPts = [];         // calib: clicked world points
+  let imgHover = null;     // last pointer world position (for the calib rubber-band)
+  let imgDrag = null;      // move: {start:[x,y], cx, cy}
+
+  function imgHasImage() { return !!(bgImg && bgImg.img); }
+
+  function imgSetMode(m) {
+    imgMode = m; imgPts = []; imgDrag = null;
+    canvas.style.cursor = m === 'move' ? 'move' : (m ? 'crosshair' : '');
+    for (const [id, mode] of [['btn-img-calib', 'calib'], ['btn-img-origin', 'origin'], ['btn-img-move', 'move']]) {
+      document.getElementById(id).classList.toggle('active', m === mode);
+    }
+    if (m === 'move') hint.innerHTML = '<b>Move image:</b> drag the picture. Esc / any other tool to stop.';
+    else if (m === 'calib') hint.innerHTML = '<b>Set scale:</b> click the first point on the image (e.g. one end of a known dimension).';
+    else if (m === 'origin') hint.innerHTML = '<b>Set origin:</b> click the point on the image that should be (0, 0).';
+    if (m) { document.querySelectorAll('.tool-btn[data-tool]').forEach(b => b.classList.remove('active')); entryBox.classList.remove('show'); }
+    draw();
+  }
+
+  function imgLoadFile(file) {
+    if (!file || !/^image\//.test(file.type || '')) { setStatus('That is not an image file.', false); return; }
+    const reader = new FileReader();
+    reader.onerror = () => setStatus('Could not read that image.', false);
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => setStatus('That image format can\'t be displayed (try PNG or JPG).', false);
+      img.onload = () => {
+        const aspect = img.naturalWidth / Math.max(1, img.naturalHeight);
+        const wWorld = Math.max(1e-6, wrap.clientWidth / view.scale * 0.6);
+        bgImg = {
+          img, name: file.name || 'image', cx: view.cx, cy: view.cy,
+          w: wWorld, h: wWorld / aspect, rot: 0, visible: true,
+          opacity: (parseInt(document.getElementById('img-opacity').value, 10) || 55) / 100,
+        };
+        imgSetMode(null);
+        setStatus('Image loaded. Use "Set scale (2 points)" so it matches real dimensions, then trace over it.');
+        draw();
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  }
+
+  document.getElementById('btn-img-import').addEventListener('click', () => { imgFileInput.value = ''; imgFileInput.click(); });
+  imgFileInput.addEventListener('change', () => { if (imgFileInput.files && imgFileInput.files[0]) imgLoadFile(imgFileInput.files[0]); });
+  wrap.addEventListener('dragover', (e) => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) e.preventDefault(); });
+  wrap.addEventListener('drop', (e) => {
+    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f && /^image\//.test(f.type || '')) { e.preventDefault(); imgLoadFile(f); }
+  });
+
+  function imgNeed() { if (imgHasImage()) return true; setStatus('Import an image first.', false); return false; }
+  document.getElementById('btn-img-calib').addEventListener('click', () => { if (imgNeed()) imgSetMode(imgMode === 'calib' ? null : 'calib'); });
+  document.getElementById('btn-img-origin').addEventListener('click', () => { if (imgNeed()) imgSetMode(imgMode === 'origin' ? null : 'origin'); });
+  document.getElementById('btn-img-move').addEventListener('click', () => { if (imgNeed()) imgSetMode(imgMode === 'move' ? null : 'move'); });
+  document.getElementById('btn-img-rot').addEventListener('click', () => { if (imgNeed()) { bgImg.rot = (bgImg.rot + 1) % 4; draw(); } });
+  document.getElementById('btn-img-toggle').addEventListener('click', () => { if (imgNeed()) { bgImg.visible = !bgImg.visible; draw(); } });
+  document.getElementById('btn-img-remove').addEventListener('click', () => { bgImg = null; imgSetMode(null); setStatus('Image removed.'); });
+  document.getElementById('img-opacity').addEventListener('input', (e) => {
+    if (bgImg) { bgImg.opacity = Math.max(0.1, Math.min(1, parseInt(e.target.value, 10) / 100)); draw(); }
+  });
+
+  // Any normal tool (clicked or keyboard shortcut) ends an image mode.
+  const _setToolBeforeImg = setTool;
+  setTool = function (t) { if (imgMode) { imgMode = null; imgPts = []; imgDrag = null; canvas.style.cursor = ''; ['btn-img-calib','btn-img-origin','btn-img-move'].forEach(id => document.getElementById(id).classList.remove('active')); } _setToolBeforeImg(t); };
+  window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && imgMode) { imgSetMode(null); hint.innerHTML = ''; } });
+
+  function imgWorldFromEvent(e) {
+    const r = canvas.getBoundingClientRect();
+    return s2w([e.clientX - r.left, e.clientY - r.top]);
+  }
+
+  // Capture phase on the wrapper: while an image mode is active, clicks are ours
+  // and never reach the normal drawing tools underneath.
+  wrap.addEventListener('mousedown', (e) => {
+    if (!imgMode || e.button !== 0 || spaceDown || e.shiftKey) return;
+    if (e.target !== canvas) return;
+    e.stopPropagation(); e.preventDefault();
+    const p = imgWorldFromEvent(e);
+    if (imgMode === 'move') {
+      if (imgHasImage()) imgDrag = { start: p, cx: bgImg.cx, cy: bgImg.cy };
+    } else if (imgMode === 'origin') {
+      bgImg.cx -= p[0]; bgImg.cy -= p[1];
+      imgSetMode(null); hint.innerHTML = '';
+      setStatus('Origin set -- the clicked point is now (0, 0).');
+    } else if (imgMode === 'calib') {
+      imgPts.push(p);
+      if (imgPts.length === 1) {
+        hint.innerHTML = '<b>Set scale:</b> now click the second point.';
+      } else {
+        const meas = Math.hypot(imgPts[1][0] - imgPts[0][0], imgPts[1][1] - imgPts[0][1]);
+        if (meas < 1e-9) { imgPts = [imgPts[0]]; setStatus('Pick two different points.', false); return; }
+        const p1 = imgPts[0];
+        showEntry(`<div class="row" style="color:var(--muted);font-size:11px;">Those points are currently ${Math.round(meas * 1000) / 1000} apart.</div>
+          <div class="row"><label>Real distance <input type="text" inputmode="decimal" id="img-real" step="any" autofocus placeholder="e.g. 50"></label></div>
+          <div class="row"><button id="img-cal-go" class="primary-action">Apply scale</button><button id="img-cal-cancel">Cancel</button></div>`, null);
+        const go = () => {
+          const real = parseNum(document.getElementById('img-real').value);
+          if (!isFinite(real) || real <= 0) { setStatus('Enter a positive distance.', false); return; }
+          const f = real / meas;
+          bgImg.cx = p1[0] + (bgImg.cx - p1[0]) * f;
+          bgImg.cy = p1[1] + (bgImg.cy - p1[1]) * f;
+          bgImg.w *= f; bgImg.h *= f;
+          hideEntry(); imgSetMode(null); hint.innerHTML = '';
+          setStatus('Image scaled to true size.');
+        };
+        document.getElementById('img-cal-go').onclick = go;
+        document.getElementById('img-real').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') go(); });
+        document.getElementById('img-cal-cancel').onclick = () => { hideEntry(); imgSetMode(null); hint.innerHTML = ''; };
+        hint.innerHTML = '<b>Set scale:</b> type the real distance in the box.';
+      }
+      draw();
+    }
+  }, true);
+  wrap.addEventListener('mousemove', (e) => {
+    if (!imgMode) return;
+    imgHover = imgWorldFromEvent(e);
+    if (imgMode === 'move' && imgDrag && imgHasImage()) {
+      bgImg.cx = imgDrag.cx + (imgHover[0] - imgDrag.start[0]);
+      bgImg.cy = imgDrag.cy + (imgHover[1] - imgDrag.start[1]);
+      draw();
+    } else if (imgMode === 'calib' && imgPts.length === 1) draw();
+  }, true);
+  window.addEventListener('mouseup', () => { imgDrag = null; });
+
+  function drawBgImage() {
+    if (!imgHasImage()) return;
+    if (bgImg.visible) {
+      const [sx, sy] = w2s([bgImg.cx, bgImg.cy]);
+      const pw = bgImg.w * view.scale, ph = bgImg.h * view.scale;
+      ctx.save();
+      ctx.globalAlpha = bgImg.opacity;
+      ctx.translate(sx, sy);
+      ctx.rotate(-bgImg.rot * Math.PI / 2);   // world y points up on screen
+      ctx.drawImage(bgImg.img, -pw / 2, -ph / 2, pw, ph);
+      ctx.restore();
+    }
+    if (imgMode === 'calib' && imgPts.length) {
+      ctx.save();
+      ctx.strokeStyle = '#ff9800'; ctx.fillStyle = '#ff9800'; ctx.lineWidth = 1.5;
+      const pts = imgPts.map(w2s);
+      for (const q of pts) { ctx.beginPath(); ctx.arc(q[0], q[1], 4, 0, Math.PI * 2); ctx.fill(); }
+      const end = pts.length === 2 ? pts[1] : (imgHover ? w2s(imgHover) : null);
+      if (end) { ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]); ctx.lineTo(end[0], end[1]); ctx.stroke(); }
+      ctx.restore();
+    }
+  }
 
   // Restore a saved "panel hidden" preference now -- safe here (everything
   // else has finished initializing), unlike doing it back where the
