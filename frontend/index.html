@@ -204,6 +204,14 @@
         <input type="range" id="img-opacity" min="10" max="100" value="55" style="flex:1;"></div>
       <button class="tool-btn" id="btn-img-toggle" title="Show or hide the image without removing it">&#128065; Show / hide image</button>
       <button class="tool-btn" id="btn-img-remove" title="Remove the image from this sketch">&#128465; Remove image</button>
+      <button class="tool-btn" id="btn-img-trace" title="Detect the edges of the image and add them as closed polylines (undoable). Set scale first so they come out at real size.">&#9998; Auto-trace edges</button>
+      <div class="field-row" style="padding:2px 6px;"><label for="img-trace-mode" style="min-width:60px;">Trace</label>
+        <select id="img-trace-mode" style="flex:1;" title="Outlines: edges of dark shapes. Centerlines: one line down the middle of thin dark strokes."><option value="outline">Outlines of shapes</option><option value="center">Centerlines (thin lines)</option></select></div>
+      <label class="field-row" style="padding:2px 6px;gap:6px;" title="Replace round outlines by true circles and curved runs by clean arcs; straight runs become single lines"><input type="checkbox" id="img-trace-fit" checked> Fit circles, arcs &amp; lines</label>
+      <div class="field-row" style="padding:2px 6px;"><label for="img-trace-thr" style="min-width:60px;" title="Where dark becomes 'edge'. 50 = automatic.">Threshold</label>
+        <input type="range" id="img-trace-thr" min="0" max="100" value="50" style="flex:1;"></div>
+      <div class="field-row" style="padding:2px 6px;"><label for="img-trace-tol" style="min-width:60px;" title="Higher = fewer points / smoother, lower = follows the image more closely">Smoothing</label>
+        <input type="range" id="img-trace-tol" min="0.5" max="6" step="0.5" value="1.5" style="flex:1;"></div>
     </div>
     <div class="tool-group">
       <div class="label">Select &amp; transform</div>
@@ -6974,6 +6982,293 @@
     } else if (imgMode === 'calib' && imgPts.length === 1) draw();
   }, true);
   window.addEventListener('mouseup', () => { imgDrag = null; });
+
+  // ---- Auto-trace: turn the reference image's edges into closed polylines ----
+  // Renders the image (with its current position/scale/rotation) to an offscreen
+  // grayscale raster, thresholds around Otsu's level, runs marching squares on
+  // the smooth gray field (sub-pixel accurate), then Douglas-Peucker simplifies.
+  // Every dark/light boundary becomes a chain, so a filled shape gives one
+  // outline and a drawn line gives an outline on each side of the stroke.
+  function imgOtsu(g) {
+    const h = new Array(256).fill(0); for (let i = 0; i < g.length; i++) h[g[i] | 0]++;
+    const n = g.length; let sum = 0; for (let i = 0; i < 256; i++) sum += i * h[i];
+    let sB = 0, wB = 0, best = 0, thr = 128;
+    for (let t = 0; t < 256; t++) {
+      wB += h[t]; if (!wB) continue; const wF = n - wB; if (!wF) break;
+      sB += t * h[t]; const mB = sB / wB, mF = (sum - sB) / wF;
+      const v = wB * wF * (mB - mF) * (mB - mF); if (v > best) { best = v; thr = t; }
+    }
+    return thr;
+  }
+  function imgDP(pts, tol, closed) {
+    if (pts.length < 3) return pts.slice();
+    const d2 = (p, a, b) => {
+      const dx = b[0] - a[0], dy = b[1] - a[1], L = dx * dx + dy * dy;
+      let t = L ? ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L : 0; t = Math.max(0, Math.min(1, t));
+      const ex = a[0] + t * dx - p[0], ey = a[1] + t * dy - p[1]; return ex * ex + ey * ey;
+    };
+    const rec = (P, lo, hi, keep) => {
+      let m = -1, bi = -1;
+      for (let i = lo + 1; i < hi; i++) { const d = d2(P[i], P[lo], P[hi]); if (d > m) { m = d; bi = i; } }
+      if (m > tol * tol) { keep[bi] = 1; rec(P, lo, bi, keep); rec(P, bi, hi, keep); }
+    };
+    let P = pts, off = 0;
+    if (closed) {  // split at the two farthest-apart-ish points so a loop simplifies evenly
+      let fi = 0, md = 0; for (let i = 1; i < pts.length; i++) { const d = (pts[i][0]-pts[0][0])**2 + (pts[i][1]-pts[0][1])**2; if (d > md) { md = d; fi = i; } }
+      P = pts.slice(fi).concat(pts.slice(0, fi)); P.push(P[0].slice());
+    }
+    const keep = new Uint8Array(P.length); keep[0] = 1; keep[P.length - 1] = 1;
+    // iterative-safe enough: contours are short after sub-pixel stepping; guard depth via try
+    rec(P, 0, P.length - 1, keep);
+    const out = []; for (let i = 0; i < P.length; i++) if (keep[i]) out.push(P[i]);
+    if (closed) out.pop();
+    return out;
+  }
+
+
+  // ---- Skeleton (centerline) tracing: Zhang-Suen thinning + pixel-graph walk ----
+  function imgThin(B, W, H) {
+    const idx = (x, y) => y * W + x;
+    let changed = true, guard = 0;
+    const del = [];
+    while (changed && guard++ < 200) {
+      changed = false;
+      for (let pass = 0; pass < 2; pass++) {
+        del.length = 0;
+        for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+          const i = idx(x, y); if (!B[i]) continue;
+          const p2 = B[i - W], p3 = B[i - W + 1], p4 = B[i + 1], p5 = B[i + W + 1], p6 = B[i + W], p7 = B[i + W - 1], p8 = B[i - 1], p9 = B[i - W - 1];
+          const N = p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9; if (N < 2 || N > 6) continue;
+          const A = (!p2 && p3) + (!p3 && p4) + (!p4 && p5) + (!p5 && p6) + (!p6 && p7) + (!p7 && p8) + (!p8 && p9) + (!p9 && p2); if (A !== 1) continue;
+          if (pass === 0) { if (p2 * p4 * p6 || p4 * p6 * p8) continue; } else { if (p2 * p4 * p8 || p2 * p6 * p8) continue; }
+          del.push(i);
+        }
+        if (del.length) { changed = true; for (const i of del) B[i] = 0; }
+      }
+    }
+  }
+  function imgSkeletonPaths(B, W, H) {
+    const NB = [[1,0],[0,1],[-1,0],[0,-1],[1,1],[-1,1],[-1,-1],[1,-1]];  // 4-connected first
+    const fg = (x, y) => x >= 0 && y >= 0 && x < W && y < H && B[y * W + x] === 1;
+    const isNode = new Uint8Array(W * H), vis = new Uint8Array(W * H);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      if (!fg(x, y)) continue;
+      const r = [fg(x,y-1),fg(x+1,y-1),fg(x+1,y),fg(x+1,y+1),fg(x,y+1),fg(x-1,y+1),fg(x-1,y),fg(x-1,y-1)];
+      let A = 0; for (let k = 0; k < 8; k++) if (!r[k] && r[(k + 1) % 8]) A++;
+      if (A !== 2 && A !== 0) isNode[y * W + x] = 1;
+    }
+    const paths = [], seen = new Set();
+    const step = (x, y, px, py) => {
+      for (const [dx, dy] of NB) { const nx = x + dx, ny = y + dy; if ((nx === px && ny === py) || !fg(nx, ny)) continue;
+        if (isNode[ny * W + nx] || !vis[ny * W + nx]) return [nx, ny]; }
+      return null;
+    };
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      if (!isNode[y * W + x]) continue;
+      for (const [dx, dy] of NB) {
+        const mx = x + dx, my = y + dy; if (!fg(mx, my)) continue;
+        const mi = my * W + mx;
+        if (isNode[mi]) { const a = y * W + x, k = a < mi ? a + ',' + mi : mi + ',' + a; if (!seen.has(k)) { seen.add(k); paths.push({ pts: [[x, y], [mx, my]], closed: false, ends: 2 }); } continue; }
+        if (vis[mi]) continue;
+        const pts = [[x, y], [mx, my]]; vis[mi] = 1; let px = x, py = y, cx = mx, cy = my, endNode = false, g = 0;
+        while (g++ < 1e6) {
+          const nx = step(cx, cy, px, py); if (!nx) break;
+          pts.push(nx); const ni = nx[1] * W + nx[0];
+          if (isNode[ni]) { endNode = true; break; }
+          vis[ni] = 1; px = cx; py = cy; cx = nx[0]; cy = nx[1];
+        }
+        // ends: how many ends touch a junction (A>=3) rather than dangling -> spur pruning
+        if (endNode && pts.length > 8 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1]) { pts.pop(); paths.push({ pts, closed: true, ends: 0 }); }
+        else paths.push({ pts, closed: false, ends: endNode ? 2 : 1 });
+      }
+    }
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {   // pure loops (no nodes at all)
+      const i = y * W + x; if (!B[i] || vis[i] || isNode[i]) continue;
+      const pts = [[x, y]]; vis[i] = 1; let px = -9, py = -9, cx = x, cy = y, g = 0;
+      while (g++ < 1e6) { const nx = step(cx, cy, px, py); if (!nx || vis[nx[1] * W + nx[0]]) break; pts.push(nx); vis[nx[1] * W + nx[0]] = 1; px = cx; py = cy; cx = nx[0]; cy = nx[1]; }
+      if (pts.length > 8 && Math.hypot(cx - x, cy - y) < 2) paths.push({ pts, closed: true, ends: 0 });
+      else if (pts.length > 8) paths.push({ pts, closed: false, ends: 2 });
+    }
+    return paths;
+  }
+
+  // ---- Arc / line / circle fitting on a traced raster polyline ----
+  function imgFitCircle(P) {
+    let sx = 0, sy = 0; for (const p of P) { sx += p[0]; sy += p[1]; } sx /= P.length; sy /= P.length;
+    let suu = 0, suv = 0, svv = 0, suuu = 0, svvv = 0, suvv = 0, svuu = 0;
+    for (const p of P) { const u = p[0] - sx, v = p[1] - sy; suu += u*u; suv += u*v; svv += v*v; suuu += u*u*u; svvv += v*v*v; suvv += u*v*v; svuu += v*u*u; }
+    const det = suu * svv - suv * suv; if (Math.abs(det) < 1e-9) return null;
+    const c1 = 0.5 * (suuu + suvv), c2 = 0.5 * (svvv + svuu);
+    const uc = (c1 * svv - c2 * suv) / det, vc = (suu * c2 - suv * c1) / det;
+    const cx = uc + sx, cy = vc + sy; let r = 0; for (const p of P) r += Math.hypot(p[0] - cx, p[1] - cy); r /= P.length;
+    let e = 0; for (const p of P) { const d = Math.hypot(p[0] - cx, p[1] - cy) - r; e += d * d; }
+    return { cx, cy, r, rms: Math.sqrt(e / P.length) };
+  }
+  function imgFitPath(P, closed, tol, nCircle) {
+    // returns {circle:[cx,cy,r]} | {points:[...], closed}
+    const n = P.length;
+    if (closed && n >= 12) {
+      const c = imgFitCircle(P);
+      if (c && c.r > 3 && c.rms < Math.max(0.6, tol * 0.5, c.r * 0.01)) return { circle: [c.cx, c.cy, c.r] };
+    }
+    // corner detection by turning angle over a +-k window
+    const k = Math.max(4, Math.min(8, Math.floor(n / 12)));
+    const at = (i) => closed ? P[((i % n) + n) % n] : P[Math.max(0, Math.min(n - 1, i))];
+    const ang = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      const a = at(i - k), b = P[i], c = at(i + k);
+      const v1x = b[0]-a[0], v1y = b[1]-a[1], v2x = c[0]-b[0], v2y = c[1]-b[1];
+      const l1 = Math.hypot(v1x, v1y), l2 = Math.hypot(v2x, v2y);
+      ang[i] = (l1 < 1e-9 || l2 < 1e-9) ? 0 : Math.acos(Math.max(-1, Math.min(1, (v1x*v2x + v1y*v2y) / (l1*l2))));
+      if (!closed && (i < k || i >= n - k)) ang[i] = 0;
+    }
+    const corners = [];
+    for (let i = 0; i < n; i++) {
+      if (ang[i] < 0.75) continue;                       // ~43 degrees
+      let ok = true; for (let d = -k; d <= k && ok; d++) { if (d === 0) continue; const j = closed ? ((i + d) % n + n) % n : i + d; if (j >= 0 && j < n && (ang[j] > ang[i] || (ang[j] === ang[i] && d < 0))) ok = false; }
+      if (ok) corners.push(i);
+    }
+    // cut points
+    let cuts = corners.slice();
+    if (!closed) { cuts = [0].concat(cuts, [n - 1]); }
+    else if (!cuts.length) { cuts = [0]; }
+    const pieces = [];
+    if (closed) {
+      if (cuts.length === 1) { const s = cuts[0]; pieces.push(P.slice(s).concat(P.slice(0, s)).concat([P[s]])); }
+      else for (let q = 0; q < cuts.length; q++) { const a = cuts[q], b = cuts[(q + 1) % cuts.length]; const pc = []; for (let i = a; ; i = (i + 1) % n) { pc.push(P[i]); if (i === b) break; } pieces.push(pc); }
+    } else for (let q = 0; q + 1 < cuts.length; q++) pieces.push(P.slice(cuts[q], cuts[q + 1] + 1));
+    const out = [];
+    for (const pc of pieces) {
+      let seg;
+      const simp = imgDP(pc, tol, false);
+      if (simp.length <= 2) seg = [pc[0], pc[pc.length - 1]];
+      else {
+        const c = pc.length >= 8 ? imgFitCircle(pc) : null;
+        let arc = null;
+        if (c && c.r > 2 && c.r < 20000 && c.rms < Math.max(0.7, tol * 0.6, c.r * 0.012)) {
+          let sw = 0, prev = Math.atan2(pc[0][1] - c.cy, pc[0][0] - c.cx);
+          for (let i = 1; i < pc.length; i++) { const a = Math.atan2(pc[i][1] - c.cy, pc[i][0] - c.cx); let d = a - prev; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; sw += d; prev = a; }
+          if (Math.abs(sw) > 0.2) arc = { c, sw, a0: Math.atan2(pc[0][1] - c.cy, pc[0][0] - c.cx) };
+        }
+        if (arc) {
+          const m = Math.max(4, Math.ceil(Math.abs(arc.sw) / (2 * Math.PI) * nCircle));
+          seg = [pc[0]];
+          for (let i = 1; i < m; i++) { const a = arc.a0 + arc.sw * i / m; seg.push([arc.c.cx + arc.c.r * Math.cos(a), arc.c.cy + arc.c.r * Math.sin(a)]); }
+          seg.push(pc[pc.length - 1]);
+        } else seg = simp;
+      }
+      if (out.length) seg = seg.slice(1);
+      for (const p of seg) out.push(p);
+    }
+    if (closed && out.length > 1) { const a = out[0], b = out[out.length - 1]; if (Math.hypot(a[0] - b[0], a[1] - b[1]) < 1e-6) out.pop(); }
+    return { points: out, closed };
+  }
+
+  function imgAutoTrace() {
+    if (!imgNeed()) return;
+    const mode = document.getElementById('img-trace-mode').value;        // 'outline' | 'center'
+    const doFit = document.getElementById('img-trace-fit').checked;
+    const rotOdd = bgImg.rot % 2 === 1;
+    const ww = rotOdd ? bgImg.h : bgImg.w, hh = rotOdd ? bgImg.w : bgImg.h;   // world extent of the rotated picture
+    const MAXPX = mode === 'center' ? 700 : 900, k = MAXPX / Math.max(ww, hh);
+    const W = Math.max(8, Math.round(ww * k)), H = Math.max(8, Math.round(hh * k));
+    const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+    const c2 = cv.getContext('2d', { willReadFrequently: true });
+    c2.fillStyle = '#fff'; c2.fillRect(0, 0, W, H);
+    c2.translate(W / 2, H / 2); c2.rotate(-bgImg.rot * Math.PI / 2);
+    c2.drawImage(bgImg.img, -bgImg.w * k / 2, -bgImg.h * k / 2, bgImg.w * k, bgImg.h * k);
+    const data = c2.getImageData(0, 0, W, H).data;
+    const FW = W + 2, FH = H + 2, g = new Float32Array(FW * FH).fill(255);
+    const g8 = new Uint8Array(W * H);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4, v = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      g[(y + 1) * FW + x + 1] = v; g8[y * W + x] = v;
+    }
+    const sens = parseInt(document.getElementById('img-trace-thr').value, 10);     // 0..100, 50 = Otsu
+    const thr = Math.max(5, Math.min(250, imgOtsu(g8) + (sens - 50) * 2.0));
+    const detail = parseFloat(document.getElementById('img-trace-tol').value);      // simplify tolerance in px
+    const raw = [];                                                                  // {pts (raster coords, +1 pad), closed}
+    if (mode === 'center') {
+      const B = new Uint8Array(FW * FH);
+      for (let i = 0; i < B.length; i++) B[i] = g[i] < thr ? 1 : 0;
+      for (let x = 0; x < FW; x++) { B[x] = 0; B[(FH - 1) * FW + x] = 0; }
+      for (let y = 0; y < FH; y++) { B[y * FW] = 0; B[y * FW + FW - 1] = 0; }
+      imgThin(B, FW, FH);
+      for (const p of imgSkeletonPaths(B, FW, FH)) {
+        if (p.pts.length < 4) continue;
+        if (p.ends === 1 && p.pts.length < 8) continue;      // short dangling spur = thinning noise
+        raw.push({ pts: p.pts.map(q => [q[0] + 0.0, q[1] + 0.0]), closed: p.closed });
+      }
+    } else {
+      const f = (x, y) => thr - g[y * FW + x];            // >0 = dark = "inside"
+      const segs = new Map(), pos = new Map();
+      const hk = (x, y) => 2 * (y * FW + x), vk = (x, y) => 2 * (y * FW + x) + 1;
+      const addSeg = (a, b) => {
+        for (const [p, q] of [[a, b], [b, a]]) { let l = segs.get(p[0]); if (!l) segs.set(p[0], l = []); l.push(q[0]); }
+        pos.set(a[0], a[1]); pos.set(b[0], b[1]);
+      };
+      const hp = (x, y) => { const a = f(x, y), b = f(x + 1, y); return [hk(x, y), [x + a / (a - b), y]]; };
+      const vp = (x, y) => { const a = f(x, y), b = f(x, y + 1); return [vk(x, y), [x, y + a / (a - b)]]; };
+      for (let y = 0; y < FH - 1; y++) for (let x = 0; x < FW - 1; x++) {
+        const tl = f(x, y) > 0, tr = f(x + 1, y) > 0, br = f(x + 1, y + 1) > 0, bl = f(x, y + 1) > 0;
+        const idx = (tl ? 8 : 0) | (tr ? 4 : 0) | (br ? 2 : 0) | (bl ? 1 : 0);
+        if (idx === 0 || idx === 15) continue;
+        const T = () => hp(x, y), B = () => hp(x, y + 1), L = () => vp(x, y), R = () => vp(x + 1, y);
+        switch (idx) {
+          case 1: case 14: addSeg(L(), B()); break;
+          case 2: case 13: addSeg(B(), R()); break;
+          case 3: case 12: addSeg(L(), R()); break;
+          case 4: case 11: addSeg(T(), R()); break;
+          case 6: case 9: addSeg(T(), B()); break;
+          case 7: case 8: addSeg(T(), L()); break;
+          case 5: case 10: {
+            const cin = (f(x, y) + f(x + 1, y) + f(x + 1, y + 1) + f(x, y + 1)) > 0;
+            if ((idx === 5) === cin) { addSeg(T(), L()); addSeg(B(), R()); } else { addSeg(T(), R()); addSeg(L(), B()); }
+          }
+        }
+      }
+      const used = new Set();
+      for (const start of segs.keys()) {
+        if (used.has(start)) continue;
+        const pts = []; let cur = start, prev = -1, closed = false, guard = 0;
+        while (guard++ < 5e6) {
+          used.add(cur); pts.push(pos.get(cur));
+          const nb = segs.get(cur) || []; let nxt = -1;
+          for (const n of nb) if (n !== prev && !used.has(n)) { nxt = n; break; }
+          if (nxt < 0) { closed = nb.includes(start) && pts.length > 2; break; }
+          prev = cur; cur = nxt;
+        }
+        if (closed && pts.length >= 4) raw.push({ pts, closed: true });
+      }
+    }
+    const toWorld = (p) => [bgImg.cx - ww / 2 + (p[0] - 1 + 0.5) / W * ww, bgImg.cy + hh / 2 - (p[1] - 1 + 0.5) / H * hh];
+    const minLen = mode === 'center' ? 6 : 12;   // px; ignore specks
+    let nChain = 0, nCirc = 0;
+    for (const r of raw) {
+      const lp = r.pts; let per = 0;
+      for (let i = 0; i + (r.closed ? 0 : 1) < lp.length; i++) { const a = lp[i], b = lp[(i + 1) % lp.length]; per += Math.hypot(a[0] - b[0], a[1] - b[1]); }
+      if (per < minLen) continue;
+      if (doFit) {
+        const fr = imgFitPath(lp, r.closed, detail, segCircle);
+        if (fr.circle) {
+          const [cx, cy, rr] = fr.circle, pts = [];
+          for (let i = 0; i < segCircle; i++) { const a = 2 * Math.PI * i / segCircle; pts.push(toWorld([cx + rr * Math.cos(a), cy + rr * Math.sin(a)])); }
+          entities.push({ id: nextEntityId++, type: 'circle', closed: true, points: pts }); nCirc++; continue;
+        }
+        if (fr.points.length < 2 || (r.closed && fr.points.length < 3)) continue;
+        entities.push({ id: nextEntityId++, type: 'chain', closed: r.closed, points: fr.points.map(toWorld) }); nChain++; continue;
+      }
+      const s = imgDP(lp, detail, r.closed);
+      if (s.length < 2 || (r.closed && s.length < 3)) continue;
+      entities.push({ id: nextEntityId++, type: 'chain', closed: r.closed, points: s.map(toWorld) }); nChain++;
+    }
+    if (!nChain && !nCirc) { setStatus('Auto-trace found nothing. Try moving the Threshold slider' + (mode === 'center' ? ' (centerline mode needs dark lines on a light background).' : '.'), false); return; }
+    pushHistory(); refreshSidebar(); draw();
+    setStatus('Auto-trace added ' + nChain + ' polyline' + (nChain === 1 ? '' : 's') + (nCirc ? ' and ' + nCirc + ' circle' + (nCirc === 1 ? '' : 's') : '') + '. Undo (Ctrl+Z) to discard; adjust the sliders and retry. Hide the image to see the result.');
+  }
+  document.getElementById('btn-img-trace').addEventListener('click', () => { try { imgAutoTrace(); } catch (e) { console.error(e); setStatus('Auto-trace failed: ' + e.message, false); } });
+
+
 
   function drawBgImage() {
     if (!imgHasImage()) return;
